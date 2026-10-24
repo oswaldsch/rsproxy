@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use toml;
 
 #[derive(Deserialize)]
 pub struct Entry {

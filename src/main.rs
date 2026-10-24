@@ -41,30 +41,30 @@ impl Proxy {
         if self.config.hosts.contains_key(host) {
             let host = host.to_string();
             let response = self.forward_request(request, host).await;
-            if response.is_ok() {
-                let (response_head, response_body) = response.unwrap().into_parts();
+            if let Ok(response) = response {
+                let (response_head, response_body) = response.into_parts();
                 if let Ok(response_body) = response_body.collect().await {
                     // FIXME: proxy loads entire response into ram instead of streaming
                     let response_body = Full::new(response_body.to_bytes());
                     let response = Response::from_parts(response_head, response_body);
                     Ok(response)
                 } else {
-                    return Ok(make_plain_response(
+                    Ok(make_plain_response(
                         "502 Bad Gateway",
                         StatusCode::BAD_GATEWAY,
-                    ));
+                    ))
                 }
             } else {
-                return Ok(make_plain_response(
+                Ok(make_plain_response(
                     "502 Bad Gateway",
                     StatusCode::BAD_GATEWAY,
-                ));
+                ))
             }
         } else {
-            return Ok(make_plain_response(
+            Ok(make_plain_response(
                 format!("421 Misdirected Request: No route for host '{}'", host),
                 StatusCode::MISDIRECTED_REQUEST,
-            ));
+            ))
         }
     }
 
@@ -75,7 +75,7 @@ impl Proxy {
     ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
         let stream = TcpStream::connect((
             self.config.hosts[&host].forward.clone(),
-            self.config.hosts[&host].port.clone(),
+            self.config.hosts[&host].port,
         ))
         .await?;
         let io = TokioIo::new(stream);

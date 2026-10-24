@@ -21,7 +21,7 @@ pub fn make_plain_response(
     body: impl Into<Bytes>,
     status_code: StatusCode,
 ) -> Response<Full<Bytes>> {
-    let mut response = Response::new(Full::new(Bytes::from(body.into())));
+    let mut response = Response::new(Full::new(body.into()));
     *response.status_mut() = status_code;
     let headers = response.headers_mut();
     // make the browser not interpret any html sent in the body because of user input
@@ -33,7 +33,7 @@ pub fn make_plain_response(
         header::X_CONTENT_TYPE_OPTIONS,
         header::HeaderValue::from_static("nosniff"),
     );
-    return response;
+    response
 }
 
 pub fn clean_request<B>(
@@ -45,12 +45,11 @@ pub fn clean_request<B>(
         .get_all(header::CONNECTION)
         .iter()
         .filter_map(|conn_header| conn_header.to_str().ok())
-        .map(|header_str| {
+        .flat_map(|header_str| {
             header_str
                 .split(',')
                 .map(|conn_header_str| conn_header_str.trim())
         })
-        .flatten()
         .filter_map(|conn_header| header::HeaderName::from_str(conn_header).ok())
         .collect();
     for header in HEADER_DELETE_LIST.iter().chain(conn_headers.iter()) {
