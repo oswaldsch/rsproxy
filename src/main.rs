@@ -3,16 +3,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use config::Config;
-use http_body_util::Full;
-use hyper::body::Bytes;
+use helpers::make_plain_response;
+use http_body_util::{BodyExt, Full};
+use hyper::StatusCode;
+use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper::{StatusCode, header};
 use hyper_util::rt::TokioIo;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 mod config;
+mod helpers;
 
 struct Proxy {
     config: Config,
@@ -24,45 +26,65 @@ impl Proxy {
         request: Request<hyper::body::Incoming>,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let Some(host) = request.headers().get("host") else {
-            return Ok(make_response(
+            return Ok(make_plain_response(
                 "400 Bad Request: No Host header sent!",
                 StatusCode::BAD_REQUEST,
             ));
         };
         let Ok(host) = host.to_str() else {
-            return Ok(make_response(
+            return Ok(make_plain_response(
                 "400 Bad Request: Invalid Host header",
                 StatusCode::BAD_REQUEST,
             ));
         };
         if self.config.hosts.contains_key(host) {
-            return Ok(make_response(
-                format!("Redirect to {}", self.config.hosts[host].forward),
-                StatusCode::OK,
-            ));
+            let owned_host = host.to_string();
+            let response = self.forward_request(request, owned_host).await;
+            if response.is_ok() {
+                let (response_head, response_body) = response.unwrap().into_parts();
+                if let Ok(response_body) = response_body.collect().await {
+                    // FIXME: proxy loads entire response into ram instead of streaming
+                    let response_body = Full::new(response_body.to_bytes());
+                    let response = Response::from_parts(response_head, response_body);
+                    Ok(response)
+                } else {
+                    return Ok(make_plain_response(
+                        "502 Bad Gateway",
+                        StatusCode::BAD_GATEWAY,
+                    ));
+                }
+            } else {
+                return Ok(make_plain_response(
+                    "502 Bad Gateway",
+                    StatusCode::BAD_GATEWAY,
+                ));
+            }
         } else {
-            return Ok(make_response(
+            return Ok(make_plain_response(
                 format!("421 Misdirected Request: No route for host '{}'", host),
                 StatusCode::MISDIRECTED_REQUEST,
             ));
         }
     }
-}
 
-fn make_response(body: impl Into<Bytes>, status_code: StatusCode) -> Response<Full<Bytes>> {
-    let mut response = Response::new(Full::new(Bytes::from(body.into())));
-    *response.status_mut() = status_code;
-    let headers = response.headers_mut();
-    // make the browser not interpret any html sent in the body because of user input
-    headers.insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::from_static("text/plain"),
-    );
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        header::HeaderValue::from_static("nosniff"),
-    );
-    return response;
+    async fn forward_request(
+        &self,
+        request: Request<hyper::body::Incoming>,
+        host: String,
+    ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
+        let stream = TcpStream::connect(self.config.hosts[&host].forward.clone()).await?;
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                println!("Connection failed: {:?}", err);
+            }
+        });
+
+        let response = sender.send_request(request).await?;
+        Ok(response)
+    }
 }
 
 #[tokio::main]
