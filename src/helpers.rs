@@ -1,7 +1,7 @@
-use std::str::FromStr;
+use std::{fmt::Display, net::SocketAddr, str::FromStr, time::Duration};
 
 use http_body_util::Full;
-use hyper::{Request, Response, StatusCode, body::Bytes, header};
+use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
 
 const HEADER_DELETE_LIST: [header::HeaderName; 11] = [
     header::HeaderName::from_static("keep-alive"),
@@ -16,6 +16,36 @@ const HEADER_DELETE_LIST: [header::HeaderName; 11] = [
     header::HeaderName::from_static("x-real-ip"),
     header::CONNECTION,
 ];
+
+pub struct LogEntry {
+    pub client: SocketAddr,
+    pub host: Option<String>,
+    pub method: Method,
+    pub path: String,
+    pub version: Version,
+    pub status: Option<StatusCode>,
+    pub upstream: Option<String>,
+    pub duration: Option<Duration>,
+}
+
+impl Display for LogEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(
+            formatter,
+            "{} {} '{} {} {:.?}' {} -> {} {:.1?}",
+            self.client,
+            self.host.clone().unwrap_or("-".to_string()),
+            self.method,
+            self.path,
+            self.version,
+            self.status
+                .expect("statuscode should always be set at this point"),
+            self.upstream.clone().unwrap_or("-".to_string()),
+            self.duration
+                .expect("duration should always be set at this point")
+        )
+    }
+}
 
 pub fn make_plain_response(
     body: impl Into<Bytes>,
