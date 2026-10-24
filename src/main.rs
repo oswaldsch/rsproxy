@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use config::Config;
+use helpers::clean_request;
 use helpers::make_plain_response;
 use http_body_util::{BodyExt, Full};
 use hyper::StatusCode;
@@ -82,7 +83,7 @@ impl Proxy {
             }
         });
 
-        let response = sender.send_request(request).await?;
+        let response = sender.send_request(clean_request(request)).await?;
         Ok(response)
     }
 }
