@@ -6,6 +6,10 @@ use toml;
 #[derive(Deserialize)]
 pub struct Entry {
     pub forward: String,
+    #[serde(default = "default_http_port")]
+    pub port: u16,
+    #[serde(default = "default_external_flag")]
+    pub external: bool,
 }
 
 #[derive(Deserialize)]
@@ -20,4 +24,12 @@ impl Config {
         let config: Config = toml::from_str(&content.to_string())?;
         Ok(config)
     }
+}
+
+fn default_http_port() -> u16 {
+    80
+}
+
+fn default_external_flag() -> bool {
+    false
 }

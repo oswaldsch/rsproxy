@@ -39,8 +39,8 @@ impl Proxy {
             ));
         };
         if self.config.hosts.contains_key(host) {
-            let owned_host = host.to_string();
-            let response = self.forward_request(request, owned_host).await;
+            let host = host.to_string();
+            let response = self.forward_request(request, host).await;
             if response.is_ok() {
                 let (response_head, response_body) = response.unwrap().into_parts();
                 if let Ok(response_body) = response_body.collect().await {
@@ -73,7 +73,11 @@ impl Proxy {
         request: Request<hyper::body::Incoming>,
         host: String,
     ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
-        let stream = TcpStream::connect(self.config.hosts[&host].forward.clone()).await?;
+        let stream = TcpStream::connect((
+            self.config.hosts[&host].forward.clone(),
+            self.config.hosts[&host].port.clone(),
+        ))
+        .await?;
         let io = TokioIo::new(stream);
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
 
@@ -83,7 +87,14 @@ impl Proxy {
             }
         });
 
-        let response = sender.send_request(clean_request(request)).await?;
+        let cleaned_request = if self.config.hosts[&host].external {
+            clean_request(request, Some(self.config.hosts[&host].forward.clone()))?
+        } else {
+            clean_request(request, None)
+                .expect("clean_request without host override should never fail")
+        };
+
+        let response = sender.send_request(cleaned_request).await?;
         Ok(response)
     }
 }

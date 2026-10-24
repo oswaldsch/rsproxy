@@ -36,7 +36,10 @@ pub fn make_plain_response(
     return response;
 }
 
-fn clean_request<B>(mut request: Request<B>) -> Request<B> {
+pub fn clean_request<B>(
+    mut request: Request<B>,
+    replace_host: Option<String>,
+) -> Result<Request<B>, header::InvalidHeaderValue> {
     let headers = request.headers_mut();
     let conn_headers: Vec<header::HeaderName> = headers
         .get_all(header::CONNECTION)
@@ -53,7 +56,11 @@ fn clean_request<B>(mut request: Request<B>) -> Request<B> {
     for header in HEADER_DELETE_LIST.iter().chain(conn_headers.iter()) {
         headers.remove(header);
     }
-    request
+    if let Some(new_host) = replace_host {
+        headers.remove(header::HOST);
+        headers.insert(header::HOST, header::HeaderValue::from_str(&new_host)?);
+    }
+    Ok(request)
 }
 
 #[cfg(test)]
@@ -68,8 +75,11 @@ mod tests {
         for header in HEADER_DELETE_LIST.iter() {
             req_builder = req_builder.header(header, HeaderValue::from_static("example value"));
         }
-        let mut cleaned =
-            clean_request(req_builder.body("test request to strip headers!").unwrap());
+        let mut cleaned = clean_request(
+            req_builder.body("test request to strip headers!").unwrap(),
+            None,
+        )
+        .unwrap();
         let cleaned_headers = cleaned.headers_mut();
         for header in HEADER_DELETE_LIST.iter() {
             assert!(
@@ -92,7 +102,7 @@ mod tests {
             .body("test request to delete connection headers!")
             .unwrap();
 
-        let cleaned = clean_request(req);
+        let cleaned = clean_request(req, None).unwrap();
         let h = cleaned.headers();
 
         for name in ["connection", "x-custom-hop", "x-other", "x-second-hop"] {
@@ -116,7 +126,9 @@ mod tests {
             req_builder
                 .body("test request to preserve headers!")
                 .unwrap(),
-        );
+            None,
+        )
+        .unwrap();
         let cleaned_headers = cleaned_req.headers();
 
         assert_eq!(&headers, cleaned_headers)
