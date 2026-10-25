@@ -1,7 +1,15 @@
-use std::{fmt::Display, net::SocketAddr, str::FromStr, time::Duration};
+use std::{
+    fmt::{Display, Formatter, write},
+    net::SocketAddr,
+    str::FromStr,
+    time::Duration,
+};
 
 use http_body_util::Full;
 use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
+use log::warn;
+
+use crate::helpers::InvalidAuthority::{EmptyLabel, Malformed, PortGiven};
 
 const HEADER_DELETE_LIST: [header::HeaderName; 11] = [
     header::HeaderName::from_static("keep-alive"),
@@ -47,6 +55,53 @@ impl Display for LogEntry {
     }
 }
 
+#[derive(Debug)]
+pub enum InvalidAuthority {
+    Malformed(http::uri::InvalidUri),
+    EmptyLabel(String),
+    PortGiven(String),
+}
+
+impl Display for InvalidAuthority {
+    fn fmt(&self, formatter: &mut Formatter) -> Result<(), std::fmt::Error> {
+        match self {
+            Malformed(err) => write!(formatter, "malformed authority: {}", err),
+            EmptyLabel(authority) => write!(formatter, "empty label in {}", authority),
+            PortGiven(authority) => write!(formatter, "forward contains a port '{}'", authority),
+        }
+    }
+}
+
+pub fn check_via_header(
+    request: &Request<hyper::body::Incoming>,
+    origin: SocketAddr,
+) -> Option<Response<Full<Bytes>>> {
+    let headers = request.headers();
+    let via_headers = headers.get_all("Via");
+    for via_header in via_headers {
+        let via_value = via_header.as_bytes();
+        if via_value
+            .split(|byte| byte == &b' ')
+            .any(|value| value == "rsproxy".as_bytes())
+        // TODO: make this configurable to comply with spec
+        {
+            warn!("proxy loop detected coming from {}", origin);
+            let mut response = make_plain_response(
+                "502 Bad Gateway: Proxy loop detected",
+                StatusCode::BAD_GATEWAY,
+            );
+            let headers = response.headers_mut();
+            headers.append(
+                header::HeaderName::from_static("proxy-status"),
+                header::HeaderValue::from_static("rsproxy; error=proxy_loop_detected"),
+            );
+            return Some(response);
+        }
+    }
+
+    None
+}
+
 pub fn make_plain_response(
     body: impl Into<Bytes>,
     status_code: StatusCode,
@@ -90,6 +145,31 @@ pub fn clean_request<B>(
         headers.insert(header::HOST, header::HeaderValue::from_str(&new_host)?);
     }
     Ok(request)
+}
+
+pub fn canonical_host(authority: &str, parsing_config: bool) -> Result<String, InvalidAuthority> {
+    let parsed_authority = http::uri::Authority::from_str(authority);
+    let parsed_authority = parsed_authority.map_err(InvalidAuthority::Malformed)?;
+    let host = parsed_authority.host();
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if host.split('.').any(|s| s.is_empty()) {
+        return Err(InvalidAuthority::EmptyLabel(host.to_string()));
+    }
+    if parsed_authority.port_u16().is_some() && parsing_config {
+        return Err(InvalidAuthority::PortGiven(authority.to_string()));
+    }
+    Ok(host.to_ascii_lowercase())
+}
+
+pub fn get_version_literal(version: Version) -> Option<String> {
+    match version {
+        Version::HTTP_09 => Some("0.9".to_string()),
+        Version::HTTP_10 => Some("1.0".to_string()),
+        Version::HTTP_11 => Some("1.1".to_string()),
+        Version::HTTP_2 => Some("2".to_string()),
+        Version::HTTP_3 => Some("3".to_string()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

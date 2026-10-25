@@ -403,6 +403,7 @@ name = "rsproxy"
 version = "0.1.0"
 dependencies = [
  "env_logger",
+ "http",
  "http-body-util",
  "hyper",
  "hyper-util",
