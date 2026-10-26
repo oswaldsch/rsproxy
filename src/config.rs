@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     process::exit,
 };
 
@@ -43,7 +44,6 @@ pub struct Entry {
     pub port: u16,
     #[serde(default = "default_external_flag")]
     pub external: bool,
-    pub tls: bool,
 }
 
 #[derive(Deserialize)]
@@ -53,37 +53,29 @@ pub struct Config {
     pub listen_http: u16,
     #[serde(default = "default_https_listen_port")]
     pub listen_https: u16,
+    #[serde(default = "default_bind_addr")]
+    pub bind: IpAddr,
+    pub cert: String,
+    pub key: String,
     pub hosts: HashMap<String, Entry>,
 }
 
 impl Config {
-    pub fn load(path: &str, to_stderr: bool) -> Self {
+    pub fn load(path: &str) -> Self {
         let read_result = std::fs::read_to_string(path);
         if let Err(err) = read_result {
-            if to_stderr {
-                eprintln!("could not read config at {}: {}", path, err)
-            } else {
-                error!("could not read config at {}: {}", path, err);
-            }
+            error!("could not read config at {}: {}", path, err);
             exit(1)
         }
         let content = read_result.unwrap();
         let parse_result: Result<Config, toml::de::Error> = toml::from_str(&content.to_string());
         if let Err(err) = parse_result {
-            if to_stderr {
-                eprintln!("could not parse config at {}:\n{}", path, err);
-            } else {
-                error!("could not parse config at {}:\n{}", path, err);
-            }
+            error!("could not parse config at {}:\n{}", path, err);
             exit(1)
         }
         let mut parse_result = parse_result.unwrap();
         if let Err(err) = parse_result.clean_up() {
-            if to_stderr {
-                eprintln!("config at {} is not valid: {}", path, err)
-            } else {
-                error!("config at {} is not valid: {}", path, err)
-            }
+            error!("config at {} is not valid: {}", path, err);
             exit(1)
         };
         parse_result
@@ -115,4 +107,8 @@ fn default_http_listen_port() -> u16 {
 
 fn default_https_listen_port() -> u16 {
     8443
+}
+
+fn default_bind_addr() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
 }

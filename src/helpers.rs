@@ -2,12 +2,12 @@ use std::{
     fmt::{Display, Formatter, write},
     net::SocketAddr,
     str::FromStr,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use http_body_util::{Empty, Full};
 use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
-use log::warn;
+use log::{info, warn};
 
 use crate::helpers::InvalidAuthority::{EmptyLabel, Malformed, PortGiven};
 
@@ -38,17 +38,28 @@ pub struct LogEntry {
 
 impl Display for LogEntry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let status_color = match self.status.unwrap().as_u16() {
+            100..=199 => "\x1b[2m",
+            200..=299 => "\x1b[32m",
+            300..=399 => "\x1b[36m",
+            400..=499 => "\x1b[33m",
+            500..=599 => "\x1b[31m",
+            _ => "",
+        };
+        let reset = "\x1b[0m";
         write!(
             formatter,
-            "{} {} '{} {} {:.?}' {} -> {} {:.1?}",
+            "{} {} '{} {} {:.?}' {}{}{} -> {} {:.1?}",
             self.client,
-            self.host.clone().unwrap_or("-".to_string()),
+            self.host.as_deref().unwrap_or("-"),
             self.method,
             self.path,
             self.version,
+            status_color,
             self.status
                 .expect("statuscode should always be set at this point"),
-            self.upstream.clone().unwrap_or("-".to_string()),
+            reset,
+            self.upstream.as_deref().unwrap_or("-"),
             self.duration
                 .expect("duration should always be set at this point")
         )
@@ -159,6 +170,54 @@ pub fn canonical_host(authority: &str, parsing_config: bool) -> Result<String, I
         return Err(InvalidAuthority::PortGiven(authority.to_string()));
     }
     Ok(host.to_ascii_lowercase())
+}
+
+pub fn handle_host(
+    request: &Request<hyper::body::Incoming>,
+    log_entry: &mut LogEntry,
+    incoming_ts: Instant,
+) -> (Option<Response<Full<Bytes>>>, Option<String>) {
+    let Some(host) = request.headers().get("host") else {
+        log_entry.duration = Some(incoming_ts.elapsed());
+        log_entry.status = Some(StatusCode::BAD_REQUEST);
+        info!("no Host header sent");
+        info!("{}", log_entry);
+        return (
+            Some(make_plain_response(
+                "400 Bad Request: No Host header sent!",
+                StatusCode::BAD_REQUEST,
+            )),
+            None,
+        );
+    };
+    let Ok(host) = host.to_str() else {
+        log_entry.duration = Some(incoming_ts.elapsed());
+        log_entry.status = Some(StatusCode::BAD_REQUEST);
+        info!("Host header is not an ascii string");
+        info!("{}", log_entry);
+        return (
+            Some(make_plain_response(
+                "400 Bad Request: Invalid Host header",
+                StatusCode::BAD_REQUEST,
+            )),
+            None,
+        );
+    };
+    let host = canonical_host(host, false);
+    if let Err(err) = host {
+        log_entry.duration = Some(incoming_ts.elapsed());
+        log_entry.status = Some(StatusCode::BAD_REQUEST);
+        info!("Host header invalid: {}", err);
+        info!("{}", log_entry);
+        return (
+            Some(make_plain_response(
+                "400 Bad Request: Invalid Host header",
+                StatusCode::BAD_REQUEST,
+            )),
+            None,
+        );
+    }
+    (None, Some(host.unwrap()))
 }
 
 pub fn get_version_literal(version: Version) -> Option<String> {

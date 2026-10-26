@@ -21,10 +21,12 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::try_join;
 
-use crate::helpers::{canonical_host, check_via_header, get_version_literal};
+use crate::helpers::{canonical_host, check_via_header, get_version_literal, handle_host};
 
 mod config;
 mod helpers;
+
+const VERSION: f32 = 0.1;
 
 #[derive(Debug)]
 struct UnsupportedVersion(Version);
@@ -63,38 +65,11 @@ impl Proxy {
             return Ok(response);
         }
 
-        let Some(host) = request.headers().get("host") else {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("no Host header sent");
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: No Host header sent!",
-                StatusCode::BAD_REQUEST,
-            ));
-        };
-        let Ok(host) = host.to_str() else {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("Host header is not an ascii string");
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: Invalid Host header",
-                StatusCode::BAD_REQUEST,
-            ));
-        };
-        let host = canonical_host(host, false);
-        if let Err(err) = host {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("Host header invalid: {}", err);
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: Invalid Host header",
-                StatusCode::BAD_REQUEST,
-            ));
+        let host_parse_result = handle_host(&request, &mut log_entry, incoming_ts);
+        if let Some(request) = host_parse_result.0 {
+            return Ok(request);
         }
-        let host = host.unwrap();
+        let host = host_parse_result.1.unwrap();
         log_entry.host = Some(host.to_string());
         if self.config.hosts.contains_key(&host) {
             log_entry.upstream = Some(self.config.hosts[&host].forward.clone());
@@ -217,38 +192,11 @@ impl Proxy {
             return Ok(response);
         }
 
-        let Some(host) = request.headers().get("host") else {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("no Host header sent");
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: No Host header sent!",
-                StatusCode::BAD_REQUEST,
-            ));
-        };
-        let Ok(host) = host.to_str() else {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("Host header is not an ascii string");
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: Invalid Host header",
-                StatusCode::BAD_REQUEST,
-            ));
-        };
-        let host = canonical_host(host, false);
-        if let Err(err) = host {
-            log_entry.duration = Some(incoming_ts.elapsed());
-            log_entry.status = Some(StatusCode::BAD_REQUEST);
-            info!("Host header invalid: {}", err);
-            info!("{}", log_entry);
-            return Ok(make_plain_response(
-                "400 Bad Request: Invalid Host header",
-                StatusCode::BAD_REQUEST,
-            ));
+        let host_parse_result = handle_host(&request, &mut log_entry, incoming_ts);
+        if let Some(request) = host_parse_result.0 {
+            return Ok(request);
         }
-        let host = host.unwrap() + ":" + &self.config.listen_https.to_string(); // TODO: clean this up
+        let host = host_parse_result.1.unwrap() + ":" + &self.config.listen_https.to_string(); // TODO: clean this up
         log_entry.host = Some(host.to_string());
 
         let new_uri_builder = http::uri::Builder::new()
@@ -272,6 +220,7 @@ impl Proxy {
             header::LOCATION,
             HeaderValue::from_str(&new_uri.to_string()).unwrap(),
         );
+        info!("redirected client {} to https", client);
 
         Ok(response)
     }
@@ -280,8 +229,9 @@ impl Proxy {
 async fn http_listener_loop(
     proxy: Arc<Proxy>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], proxy.config.listen_http));
+    let addr = SocketAddr::from((proxy.config.bind, proxy.config.listen_http));
     let listener = TcpListener::bind(addr).await?;
+    info!("listening on {} for http", addr);
 
     loop {
         let (stream, client) = listener.accept().await?;
@@ -307,16 +257,17 @@ async fn https_listener_loop(
     proxy: Arc<Proxy>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let certs: Vec<CertificateDer> =
-        CertificateDer::pem_file_iter("oswald.localhost.pem")?.collect::<Result<_, _>>()?;
-    let key = PrivateKeyDer::from_pem_file("oswald.localhost-key.pem")?;
+        CertificateDer::pem_file_iter(&proxy.config.cert)?.collect::<Result<_, _>>()?;
+    let key = PrivateKeyDer::from_pem_file(&proxy.config.key)?;
 
     let tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], proxy.config.listen_https));
+    let addr = SocketAddr::from((proxy.config.bind, proxy.config.listen_https));
     let listener = TcpListener::bind(addr).await?;
+    info!("listening on {} for https", addr);
 
     loop {
         let (stream, client) = listener.accept().await?;
@@ -346,8 +297,9 @@ async fn https_listener_loop(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
+    info!("starting rsproxy v{}", VERSION);
 
-    let config = Config::load("./config.toml", false);
+    let config = Config::load("./config.toml");
 
     let proxy = Arc::new(Proxy { config });
 
