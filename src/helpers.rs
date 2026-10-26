@@ -85,6 +85,7 @@ impl Display for InvalidAuthority {
 pub fn check_via_header(
     request: &Request<hyper::body::Incoming>,
     origin: SocketAddr,
+    instance_name: &str,
 ) -> Option<Response<Full<Bytes>>> {
     let headers = request.headers();
     let via_headers = headers.get_all("Via");
@@ -92,8 +93,7 @@ pub fn check_via_header(
         let via_value = via_header.as_bytes();
         if via_value
             .split(|byte| byte == &b' ')
-            .any(|value| value == "rsproxy".as_bytes())
-        // TODO: make this configurable to comply with spec
+            .any(|value| value == instance_name.as_bytes())
         {
             warn!("proxy loop detected coming from {}", origin);
             let mut response = make_plain_response(
@@ -103,7 +103,11 @@ pub fn check_via_header(
             let headers = response.headers_mut();
             headers.append(
                 header::HeaderName::from_static("proxy-status"),
-                header::HeaderValue::from_static("rsproxy; error=proxy_loop_detected"),
+                header::HeaderValue::from_str(&format!(
+                    "{}; error=proxy_loop_detected",
+                    instance_name
+                ))
+                .unwrap(),
             );
             return Some(response);
         }

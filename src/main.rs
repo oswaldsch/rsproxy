@@ -66,7 +66,7 @@ impl Proxy {
 
         let client_upgrade_future = hyper::upgrade::on(&mut request);
 
-        if let Some(response) = check_via_header(&request, client) {
+        if let Some(response) = check_via_header(&request, client, &self.config.instance_name) {
             return Ok(response);
         }
 
@@ -177,7 +177,7 @@ impl Proxy {
 
         headers.append(
             header::VIA,
-            HeaderValue::from_str(&format!("{} rsproxy", version))?,
+            HeaderValue::from_str(&format!("{} {}", version, self.config.instance_name))?,
         );
 
         let mut response = sender.send_request(request).await?;
@@ -185,7 +185,7 @@ impl Proxy {
         clean_headers(headers, None, upgrade_flag)?;
         headers.append(
             header::VIA,
-            HeaderValue::from_str(&format!("{} rsproxy", version))?,
+            HeaderValue::from_str(&format!("{} {}", version, self.config.instance_name))?,
         );
         Ok(response)
     }
@@ -207,7 +207,7 @@ impl Proxy {
             duration: None,
         };
 
-        if let Some(response) = check_via_header(&request, client) {
+        if let Some(response) = check_via_header(&request, client, &self.config.instance_name) {
             return Ok(response);
         }
 

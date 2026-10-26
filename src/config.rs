@@ -57,6 +57,8 @@ pub struct Config {
     pub bind: IpAddr,
     pub cert: String,
     pub key: String,
+    #[serde(default = "default_instance_name")]
+    pub instance_name: String,
     pub hosts: HashMap<String, Entry>,
 }
 
@@ -111,4 +113,8 @@ fn default_https_listen_port() -> u16 {
 
 fn default_bind_addr() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
+}
+
+fn default_instance_name() -> String {
+    String::from("rsproxy")
 }
