@@ -10,6 +10,8 @@ http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 log = "0.4.34"
+rustls = "0.23.46"
 serde = { version = "1.0.229", features = ["derive"] }
 tokio = { version = "1.54.1", features = ["macros", "net", "rt-multi-thread"] }
+tokio-rustls = "0.26.6"
 toml = "1.1.8"

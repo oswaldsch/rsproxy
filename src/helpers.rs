@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use http_body_util::Full;
+use http_body_util::{Empty, Full};
 use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
 use log::warn;
 

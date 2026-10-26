@@ -40,16 +40,19 @@ impl Display for InvalidConfig {
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     pub forward: String,
-    #[serde(default = "default_http_port")]
     pub port: u16,
     #[serde(default = "default_external_flag")]
     pub external: bool,
+    pub tls: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub listen: u16,
+    #[serde(default = "default_http_listen_port")]
+    pub listen_http: u16,
+    #[serde(default = "default_https_listen_port")]
+    pub listen_https: u16,
     pub hosts: HashMap<String, Entry>,
 }
 
@@ -102,10 +105,14 @@ impl Config {
     }
 }
 
-fn default_http_port() -> u16 {
-    80
-}
-
 fn default_external_flag() -> bool {
     false
+}
+
+fn default_http_listen_port() -> u16 {
+    8080
+}
+
+fn default_https_listen_port() -> u16 {
+    8443
 }
