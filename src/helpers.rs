@@ -6,12 +6,12 @@ use std::{
 };
 
 use http_body_util::{Empty, Full};
-use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
+use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header, server::conn};
 use log::{info, warn};
 
 use crate::helpers::InvalidAuthority::{EmptyLabel, Malformed, PortGiven};
 
-const HEADER_DELETE_LIST: [header::HeaderName; 11] = [
+const HEADER_DELETE_LIST: [header::HeaderName; 10] = [
     header::HeaderName::from_static("keep-alive"),
     header::HeaderName::from_static("proxy-connection"),
     header::PROXY_AUTHENTICATE,
@@ -19,7 +19,6 @@ const HEADER_DELETE_LIST: [header::HeaderName; 11] = [
     header::TE,
     header::TRAILER,
     header::TRANSFER_ENCODING,
-    header::UPGRADE,
     header::FORWARDED,
     header::HeaderName::from_static("x-real-ip"),
     header::CONNECTION,
@@ -113,6 +112,23 @@ pub fn check_via_header(
     None
 }
 
+pub fn check_upgrade_header(request: &Request<hyper::body::Incoming>) -> bool {
+    let headers = request.headers();
+    if headers.get(header::UPGRADE).is_some() {
+        let conn_headers = headers.get_all(header::CONNECTION);
+        for conn_header in conn_headers {
+            if conn_header
+                .as_bytes()
+                .split(|c| c == &b',')
+                .any(|s| s.to_ascii_lowercase().trim_ascii() == b"upgrade")
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn make_plain_response(
     body: impl Into<Bytes>,
     status_code: StatusCode,
@@ -135,6 +151,7 @@ pub fn make_plain_response(
 pub fn clean_request<B>(
     mut request: Request<B>,
     replace_host: Option<String>,
+    upgrade_flag: bool,
 ) -> Result<Request<B>, header::InvalidHeaderValue> {
     let headers = request.headers_mut();
     let conn_headers: Vec<header::HeaderName> = headers
@@ -149,11 +166,21 @@ pub fn clean_request<B>(
         .filter_map(|conn_header| header::HeaderName::from_str(conn_header).ok())
         .collect();
     for header in HEADER_DELETE_LIST.iter().chain(conn_headers.iter()) {
-        headers.remove(header);
+        if upgrade_flag && header == header::UPGRADE {
+            continue;
+        } else {
+            headers.remove(header);
+        }
     }
     if let Some(new_host) = replace_host {
         headers.remove(header::HOST);
         headers.insert(header::HOST, header::HeaderValue::from_str(&new_host)?);
+    }
+    if upgrade_flag {
+        headers.insert(
+            header::CONNECTION,
+            header::HeaderValue::from_static("upgrade"),
+        );
     }
     Ok(request)
 }
@@ -246,6 +273,7 @@ mod tests {
         let mut cleaned = clean_request(
             req_builder.body("test request to strip headers!").unwrap(),
             None,
+            false,
         )
         .unwrap();
         let cleaned_headers = cleaned.headers_mut();
@@ -270,7 +298,7 @@ mod tests {
             .body("test request to delete connection headers!")
             .unwrap();
 
-        let cleaned = clean_request(req, None).unwrap();
+        let cleaned = clean_request(req, None, false).unwrap();
         let h = cleaned.headers();
 
         for name in ["connection", "x-custom-hop", "x-other", "x-second-hop"] {
@@ -295,6 +323,7 @@ mod tests {
                 .body("test request to preserve headers!")
                 .unwrap(),
             None,
+            false,
         )
         .unwrap();
         let cleaned_headers = cleaned_req.headers();

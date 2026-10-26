@@ -14,6 +14,7 @@ use hyper::StatusCode;
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use hyper::upgrade::OnUpgrade;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use log::{info, warn};
@@ -21,7 +22,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::try_join;
 
-use crate::helpers::{canonical_host, check_via_header, get_version_literal, handle_host};
+use crate::helpers::{
+    canonical_host, check_upgrade_header, check_via_header, get_version_literal, handle_host,
+};
 
 mod config;
 mod helpers;
@@ -46,7 +49,7 @@ struct Proxy {
 impl Proxy {
     pub async fn route(
         &self,
-        request: Request<hyper::body::Incoming>,
+        mut request: Request<hyper::body::Incoming>,
         client: SocketAddr,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let incoming_ts = Instant::now();
@@ -61,6 +64,8 @@ impl Proxy {
             duration: None,
         };
 
+        let client_upgrade_future = hyper::upgrade::on(&mut request);
+
         if let Some(response) = check_via_header(&request, client) {
             return Ok(response);
         }
@@ -71,10 +76,18 @@ impl Proxy {
         }
         let host = host_parse_result.1.unwrap();
         log_entry.host = Some(host.to_string());
+
         if self.config.hosts.contains_key(&host) {
             log_entry.upstream = Some(self.config.hosts[&host].forward.clone());
-            let response = self.forward_request(request, &host).await;
-            if let Ok(response) = response {
+
+            let upgrade_flag = check_upgrade_header(&request);
+
+            let response = self.forward_request(request, &host, upgrade_flag).await;
+            if let Ok(mut response) = response {
+                if upgrade_flag && response.status() == StatusCode::SWITCHING_PROTOCOLS {
+                    let server_upgrade_future = hyper::upgrade::on(&mut response);
+                    tokio::spawn(handle_ws(client_upgrade_future, server_upgrade_future));
+                }
                 let (response_head, response_body) = response.into_parts();
                 let response_body = response_body.collect().await;
                 if let Ok(response_body) = response_body {
@@ -129,6 +142,7 @@ impl Proxy {
         &self,
         request: Request<hyper::body::Incoming>,
         host: &String,
+        upgrade_flag: bool,
     ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
         let stream = TcpStream::connect((
             self.config.hosts[host].forward.clone(),
@@ -139,7 +153,7 @@ impl Proxy {
         let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
 
         tokio::task::spawn(async move {
-            if let Err(err) = conn.await {
+            if let Err(err) = conn.with_upgrades().await {
                 println!("Connection failed: {:?}", err);
             }
         });
@@ -150,9 +164,13 @@ impl Proxy {
         };
 
         let mut cleaned_request = if self.config.hosts[host].external {
-            clean_request(request, Some(self.config.hosts[host].forward.clone()))?
+            clean_request(
+                request,
+                Some(self.config.hosts[host].forward.clone()),
+                upgrade_flag,
+            )?
         } else {
-            clean_request(request, None)
+            clean_request(request, None, upgrade_flag)
                 .expect("clean_request without host override should never fail")
         };
 
@@ -162,7 +180,7 @@ impl Proxy {
             HeaderValue::from_str(&format!("{} rsproxy", version))?,
         );
 
-        let mut response = sender.send_request(cleaned_request).await?;
+        let mut response = sender.send_request(cleaned_request).await?; // FIXME (maybe): also strip response hop-by-hop headers
         let headers = response.headers_mut();
         headers.append(
             header::VIA,
@@ -226,6 +244,20 @@ impl Proxy {
     }
 }
 
+async fn handle_ws(
+    client_upgrade_future: OnUpgrade,
+    server_upgrade_future: OnUpgrade,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (client_upgraded, server_upgraded) =
+        try_join!(client_upgrade_future, server_upgrade_future)?;
+
+    let (mut client_io, mut server_io) =
+        (TokioIo::new(client_upgraded), TokioIo::new(server_upgraded));
+    tokio::io::copy_bidirectional(&mut client_io, &mut server_io).await?;
+
+    Ok(())
+}
+
 async fn http_listener_loop(
     proxy: Arc<Proxy>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -245,6 +277,7 @@ async fn http_listener_loop(
                     io,
                     service_fn(|request| proxy.upgrade_https(request, client)),
                 )
+                .with_upgrades()
                 .await
             {
                 eprintln!("Error serving connection: {:?}", err);
@@ -286,6 +319,7 @@ async fn https_listener_loop(
             let io = TokioIo::new(tls);
             if let Err(err) = http1::Builder::new()
                 .serve_connection(io, service_fn(|request| proxy.route(request, client)))
+                .with_upgrades()
                 .await
             {
                 eprintln!("Error serving connection: {:?}", err);
