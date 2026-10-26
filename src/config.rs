@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr},
     process::exit,
 };
 
@@ -84,7 +84,7 @@ impl Config {
     fn clean_up(&mut self) -> Result<(), InvalidConfig> {
         let mut cleaned_hosts: HashMap<String, Entry> = HashMap::new();
         for (host, entry) in &self.hosts {
-            let canon_host = helpers::canonical_host(&host, true)?;
+            let canon_host = helpers::canonical_host(host, true)?;
             let mut cleaned_entry = entry.clone();
             cleaned_entry.forward = helpers::canonical_host(&entry.forward, true)?;
             let insert_result = cleaned_hosts.insert(canon_host.clone(), cleaned_entry);

@@ -1,12 +1,12 @@
 use std::{
-    fmt::{Display, Formatter, write},
+    fmt::{Display, Formatter},
     net::SocketAddr,
     str::FromStr,
     time::{Duration, Instant},
 };
 
-use http_body_util::{Empty, Full};
-use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header, server::conn};
+use http_body_util::Full;
+use hyper::{Method, Request, Response, StatusCode, Version, body::Bytes, header};
 use log::{info, warn};
 
 use crate::helpers::InvalidAuthority::{EmptyLabel, Malformed, PortGiven};
