@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use config::Config;
 use env_logger::Env;
-use helpers::{LogEntry, clean_request, make_plain_response};
 use http::{HeaderValue, Version, header};
 use http_body_util::{BodyExt, Full};
 use hyper::StatusCode;
@@ -23,7 +22,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::try_join;
 
 use crate::helpers::{
-    canonical_host, check_upgrade_header, check_via_header, get_version_literal, handle_host,
+    LogEntry, check_upgrade_header, check_via_header, clean_headers, get_version_literal,
+    handle_host, make_plain_response,
 };
 
 mod config;
@@ -140,7 +140,7 @@ impl Proxy {
 
     async fn forward_request(
         &self,
-        request: Request<hyper::body::Incoming>,
+        mut request: Request<hyper::body::Incoming>,
         host: &String,
         upgrade_flag: bool,
     ) -> Result<Response<Incoming>, Box<dyn std::error::Error + Send + Sync>> {
@@ -163,25 +163,26 @@ impl Proxy {
             return Err(UnsupportedVersion(version).into());
         };
 
-        let mut cleaned_request = if self.config.hosts[host].external {
-            clean_request(
-                request,
+        let headers = request.headers_mut();
+        if self.config.hosts[host].external {
+            clean_headers(
+                headers,
                 Some(self.config.hosts[host].forward.clone()),
                 upgrade_flag,
             )?
         } else {
-            clean_request(request, None, upgrade_flag)
+            clean_headers(headers, None, upgrade_flag)
                 .expect("clean_request without host override should never fail")
         };
 
-        let headers = cleaned_request.headers_mut();
         headers.append(
             header::VIA,
             HeaderValue::from_str(&format!("{} rsproxy", version))?,
         );
 
-        let mut response = sender.send_request(cleaned_request).await?; // FIXME (maybe): also strip response hop-by-hop headers
+        let mut response = sender.send_request(request).await?;
         let headers = response.headers_mut();
+        clean_headers(headers, None, upgrade_flag)?;
         headers.append(
             header::VIA,
             HeaderValue::from_str(&format!("{} rsproxy", version))?,

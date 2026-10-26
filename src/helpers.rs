@@ -148,12 +148,11 @@ pub fn make_plain_response(
     response
 }
 
-pub fn clean_request<B>(
-    mut request: Request<B>,
+pub fn clean_headers(
+    headers: &mut header::HeaderMap<header::HeaderValue>,
     replace_host: Option<String>,
     upgrade_flag: bool,
-) -> Result<Request<B>, header::InvalidHeaderValue> {
-    let headers = request.headers_mut();
+) -> Result<(), header::InvalidHeaderValue> {
     let conn_headers: Vec<header::HeaderName> = headers
         .get_all(header::CONNECTION)
         .iter()
@@ -182,7 +181,7 @@ pub fn clean_request<B>(
             header::HeaderValue::from_static("upgrade"),
         );
     }
-    Ok(request)
+    Ok(())
 }
 
 pub fn canonical_host(authority: &str, parsing_config: bool) -> Result<String, InvalidAuthority> {
@@ -255,79 +254,5 @@ pub fn get_version_literal(version: Version) -> Option<String> {
         Version::HTTP_2 => Some("2".to_string()),
         Version::HTTP_3 => Some("3".to_string()),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use hyper::{HeaderMap, header::HeaderValue};
-
-    use super::*;
-
-    #[test]
-    fn test_clean_request_delete_headers() {
-        let mut req_builder = Request::builder();
-        for header in HEADER_DELETE_LIST.iter() {
-            req_builder = req_builder.header(header, HeaderValue::from_static("example value"));
-        }
-        let mut cleaned = clean_request(
-            req_builder.body("test request to strip headers!").unwrap(),
-            None,
-            false,
-        )
-        .unwrap();
-        let cleaned_headers = cleaned.headers_mut();
-        for header in HEADER_DELETE_LIST.iter() {
-            assert!(
-                cleaned_headers.get(header).is_none(),
-                "{header} was not stripped"
-            )
-        }
-    }
-
-    #[test]
-    fn test_clean_request_delete_conn_headers() {
-        let req = Request::builder()
-            .header(header::CONNECTION, "X-Custom-Hop, , x-other ,")
-            .header(header::CONNECTION, "x-second-hop")
-            .header("x-custom-hop", "1")
-            .header("x-other", "1")
-            .header("x-second-hop", "1")
-            .header(header::HOST, "example.com")
-            .header("x-keep-me", "1")
-            .body("test request to delete connection headers!")
-            .unwrap();
-
-        let cleaned = clean_request(req, None, false).unwrap();
-        let h = cleaned.headers();
-
-        for name in ["connection", "x-custom-hop", "x-other", "x-second-hop"] {
-            assert!(!h.contains_key(name), "{name} was not stripped");
-        }
-
-        assert_eq!(h.get(header::HOST).unwrap(), "example.com");
-        assert_eq!(h.get("x-keep-me").unwrap(), "1");
-    }
-
-    #[test]
-    fn test_clean_request_preserve_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("example.com"));
-        headers.insert("user-agent", HeaderValue::from_static("rsproxy-tester"));
-        let mut req_builder = Request::builder();
-        let headers_req = req_builder.headers_mut().unwrap();
-        *headers_req = headers.clone();
-
-        let cleaned_req = clean_request(
-            req_builder
-                .body("test request to preserve headers!")
-                .unwrap(),
-            None,
-            false,
-        )
-        .unwrap();
-        let cleaned_headers = cleaned_req.headers();
-
-        assert_eq!(&headers, cleaned_headers)
     }
 }
